@@ -1,11 +1,12 @@
 package consumer
 
 import (
-	"context"
+	// "context"
 	"encoding/json"
 	"fmt"
 	"time"
-
+	"errors"
+		
 	"github.com/Shopify/sarama"
 	"github.com/ZiadAbass/event-streams-samples/kafka-golang-console-sample/pkg/config"
 	"github.com/ZiadAbass/event-streams-samples/kafka-golang-console-sample/pkg/producer"
@@ -14,7 +15,7 @@ import (
 type (
 	// SeqConsumer represents the consumer that recieves the sequenced messages
 	SeqConsumer struct {
-		ConsumerGrp sarama.ConsumerGroup
+		Consumer sarama.Consumer
 		topicName   string
 	}
 )
@@ -39,12 +40,14 @@ func getConsumerConfig(apikey string) *sarama.Config {
 // NewConsumer returns a new OrderedSeqConsumer
 func NewConsumer(cfg *config.Config) (*SeqConsumer, error) {
 	consumerConfig := getConsumerConfig(cfg.APIKey)
-	consumer, err := sarama.NewConsumerGroup(cfg.KafkaEndpoints, "consumer-group", consumerConfig)
+
+	consumer, err := sarama.NewConsumer(cfg.KafkaEndpoints, consumerConfig)
 	if err != nil {
 		return nil, err
 	}
+
 	sc := &SeqConsumer{
-		ConsumerGrp: consumer,
+		Consumer: consumer,
 		topicName:   cfg.TopicName,
 	}
 	return sc, nil
@@ -52,24 +55,35 @@ func NewConsumer(cfg *config.Config) (*SeqConsumer, error) {
 
 // Run starts the consumer
 func (sc *SeqConsumer) Run() error {
-	ctx, ctxCancel := context.WithCancel(context.Background())
-	cHandler := consumerGroupHandler{
-		// can set the number of messages to consumer here e.g.
-		// toConsume: 50,
+	partitionConsumer, err := sc.Consumer.ConsumePartition(
+		sc.topicName, 0, sarama.OffsetOldest)
+	if err != nil {
+		sc.Consumer.Close()
+		return err
 	}
-	defer sc.ConsumerGrp.Close()
-	fmt.Println("Waiting for messages to consume...")
+	defer fmt.Printf("Closed down both")
+	defer sc.Consumer.Close()
+	defer partitionConsumer.Close()
+	var msg *sarama.ConsumerMessage
+	var ok bool
+	// Loop waiting for messages.
 	for {
-		err := sc.ConsumerGrp.Consume(ctx, []string{sc.topicName}, cHandler)
-		if err != nil {
-			ctxCancel()
-			sc.ConsumerGrp.Close()
-			return err
-		}
-		ctxCancel()
-		err = sc.ConsumerGrp.Close()
-		if err == nil {
-			break
+		select {
+		case msg, ok = <-partitionConsumer.Messages():
+			if !ok {
+				return errors.New("consumer messages channel was closed")
+			}
+			payload := &producer.MessagePayload{}
+			_ = json.Unmarshal(msg.Value, payload)
+			fmt.Printf("Consumed message with key %v with offset %v\n", msg.Key, msg.Offset)
+
+		case err, ok := <-partitionConsumer.Errors():
+			if !ok {
+				return errors.New("consumer errors channel was closed")
+			}
+			return fmt.Errorf("error received from consumer: %w", err)
+		case <-time.After(time.Minute * 60):
+			return errors.New("failed to consume message within timeout of 300 seconds")
 		}
 	}
 	return nil

@@ -79,5 +79,5 @@ func cleanupProducer(osp *producer.SeqProducer) {
 
 func cleanupConsumer(osc *consumer.SeqConsumer) {
 	fmt.Printf("Closing the consumer...\n")
-	osc.ConsumerGrp.Close()
+	osc.Consumer.Close()
 }
